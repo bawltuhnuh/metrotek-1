@@ -27,23 +27,27 @@
     git clone https://github.com/bawltuhnuh/metrotek-1.git 
     cd metrotek-1
     make
-    make install
+    sudo make install
 
 # Запуск
 
 ## stat_collector_v1
 
-    stat_collector_v1
+    sudo stat_collector_v1
 
 ## stat_collector_v2
     
-    stat_collector_v2
+    sudo stat_collector_v2
 
 ## stat_displayer
     
-    stat_displayer
+    sudo stat_displayer
 
 # Результаты профилирования
 
 # Авторство и лицензия
 
+Автор: Ярославцева Александра
+email: yaroslavceva_sasha@mail.ru  
+
+Лицензия: GNU GPL

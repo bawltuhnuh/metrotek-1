@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <linux/ip.h>
 #include <linux/udp.h>
 #include <errno.h>
@@ -12,7 +13,6 @@
 #include <mqueue.h>
 #include <fcntl.h>
 
-#define HEADER_SIZE (sizeof(struct iphdr) + sizeof(struct udphdr))
 #define QUEUE_PERMISSIONS 0660
 #define MAX_MESSAGES 10
 #define MAX_MSG_SIZE 256
@@ -46,23 +46,17 @@ void* stat_monitor(void* params)
 
     int flags = fcntl(fd, F_GETFL, 0);
     flags |= O_NONBLOCK;
-    //int s = 
     if (fcntl(fd, F_SETFL, flags) == -1)
     {
         perror("fcntl setfl");
     }
-
     char* buffer = (char*) malloc(65536);
     memset(buffer, 0, 65536);
-    
     struct sockaddr_in saddr;
     memset(&saddr, 0, sizeof(saddr));
-    
     struct sockaddr_in daddr;
     memset(&daddr, 0, sizeof(daddr));
-    
     int buflen;
-    
     while (1)
     {
         buflen = recvfrom(fd, buffer, 65536, 0, NULL, NULL);
@@ -70,7 +64,6 @@ void* stat_monitor(void* params)
         {
             if (errno == EAGAIN)
             {
-                //perror("socket eagain");
                 if (pthread_cond_signal(&cond) != 0)
                 {
                     perror("cond signal");
@@ -86,20 +79,14 @@ void* stat_monitor(void* params)
             char dest[INET_ADDRSTRLEN];
             int p_source;
             int p_dest;
-            
             struct iphdr* ip = (struct iphdr*) buffer;
-            
             saddr.sin_addr.s_addr = ip->saddr;
             daddr.sin_addr.s_addr = ip->daddr;
-            
             inet_ntop(AF_INET, &(saddr.sin_addr), source, INET_ADDRSTRLEN);
             inet_ntop(AF_INET, &(daddr.sin_addr), dest, INET_ADDRSTRLEN);
-            
             struct udphdr* udp = (struct udphdr*) (buffer + sizeof(struct iphdr));
-            
             p_source = (int)ntohs(udp->source);
             p_dest = (int)ntohs(udp->dest);
-            
             if ((s_params->source_ip == NULL || s_params->source_ip == source) &&
                 (s_params->dest_ip == NULL || s_params->dest_ip == dest) &&
                 (s_params->source_port == -1 || s_params->source_port == p_source) &&
@@ -125,8 +112,8 @@ void* stat_monitor(void* params)
 
 void* compute_stats()
 {
-    int sum = 0;
-    int count = 0;
+    uint64_t sum = 0;
+    uint64_t count = 0;
     
     mqd_t qd_server, qd_client;
     
@@ -142,7 +129,6 @@ void* compute_stats()
     if ((qd_server = mq_open(SERVER_QUEUE_NAME, O_RDONLY | O_CREAT | O_NONBLOCK, QUEUE_PERMISSIONS, &attr)) == -1)
     {
         perror("Server: server mq_open");
-        exit(1);
     }
     while (1)
     {
@@ -173,7 +159,6 @@ void* compute_stats()
         sum = sum + package_size;
         ++count;
         package_size = 0;
-        //printf("Count: %d, sum: %d\n", count, sum);    
         if (pthread_mutex_unlock(&lock) != 0)
         {
             perror("compute mutex unlock");
@@ -223,11 +208,13 @@ int main(int argc, char*argv[])
     if (iret1)
     {
         printf("pthread error: %d", iret1);
+        exit(1);
     }
     iret2 = pthread_create(&thread2, NULL, stat_monitor,(void*) &params);
     if (iret2)
     {
         printf("pthread error: %d", iret2);
+        exit(1);
     }
     pthread_join(thread2, NULL);
 }
