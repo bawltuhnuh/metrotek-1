@@ -48,6 +48,7 @@
 # Авторство и лицензия
 
 Автор: Ярославцева Александра
+
 email: yaroslavceva_sasha@mail.ru  
 
 Лицензия: GNU GPL
