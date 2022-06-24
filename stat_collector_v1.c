@@ -1,4 +1,6 @@
 #include <sys/socket.h>
+#include <net/if.h>
+#include <sys/ioctl.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <unistd.h>
@@ -25,6 +27,7 @@ struct net_params {
     char* dest_ip;
     int source_port;
     int dest_port;
+    char* iface;
 };
 
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
@@ -37,19 +40,30 @@ void* stat_monitor(void* params)
 {
     struct net_params* s_params = (struct net_params*) params;
 
-    int fd = socket(AF_INET, SOCK_RAW, IPPROTO_UDP);
+    int fd = socket(AF_PACKET, SOCK_RAW, IPPROTO_UDP);
     if (fd < 0)
     {
-        printf("Socket error");
+        printf("Socket error\n");
         return NULL;
     }
-
     int flags = fcntl(fd, F_GETFL, 0);
     flags |= O_NONBLOCK;
     if (fcntl(fd, F_SETFL, flags) == -1)
     {
         perror("fcntl setfl");
     }
+    struct ifreq ifr;
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, s_params->iface, IFNAMSIZ);
+    //snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), s_params->iface);
+    if (setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, (void*)&ifr, sizeof(ifr)))
+    {
+        perror("setsockopt");
+    }
+    //if(ioctl(fd, SIOCGIFADDR,&ifr))
+    //{
+    //    perror("ioctl");
+    //}
     char* buffer = (char*) malloc(65536);
     memset(buffer, 0, 65536);
     struct sockaddr_in saddr;
@@ -173,8 +187,9 @@ int main(int argc, char*argv[])
     params.dest_port = -1;
     params.source_ip = NULL;
     params.dest_ip = NULL;
+    params.iface = NULL;
     int opt;
-    while ((opt=getopt(argc, argv, "s:d:S:D:")) != -1) {
+    while ((opt=getopt(argc, argv, "s:d:S:D:i:")) != -1) {
         switch (opt) {
         case 's':
         {
@@ -198,22 +213,33 @@ int main(int argc, char*argv[])
             strcpy(params.dest_ip, optarg);
             break;
         }
+        case 'i':
+        {
+            params.iface = malloc(sizeof(optarg));
+            strcpy(params.iface, optarg);
+            break;
+        }
         default:
             break;
         }
+    }
+    if (params.iface == NULL)
+    {
+        printf("-i iface is mandatory option\n");
+        exit(1);
     }
     pthread_t thread1, thread2;
     int iret1, iret2;
     iret1 = pthread_create(&thread1, NULL, compute_stats, NULL);
     if (iret1)
     {
-        printf("pthread error: %d", iret1);
+        printf("pthread error: %d\n", iret1);
         exit(1);
     }
     iret2 = pthread_create(&thread2, NULL, stat_monitor,(void*) &params);
     if (iret2)
     {
-        printf("pthread error: %d", iret2);
+        printf("pthread error: %d\n", iret2);
         exit(1);
     }
     pthread_join(thread2, NULL);

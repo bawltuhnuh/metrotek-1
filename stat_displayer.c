@@ -49,6 +49,6 @@ int main(int argc, char* argv[])
         perror("Client: mq_unlink");
         exit(1);
     }
-    printf("%s", in_buf);
+    printf("%s\n", in_buf);
     exit(0);
 }
