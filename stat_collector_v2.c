@@ -1,16 +1,26 @@
 #include <sys/socket.h>
-#include <netinet/in.h>
+#include <sys/ioctl.h>
+
+#include<net/if.h>
+#include<netinet/in.h>
+#include<netinet/ip.h>
+#include<netinet/if_ether.h>
+#include<netinet/udp.h>
+
+#include<linux/if_packet.h>
+
+#include <arpa/inet.h>
+
 #include <pthread.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
-#include <linux/ip.h>
-#include <linux/udp.h>
 #include <errno.h>
-#include <arpa/inet.h>
+
 #include <mqueue.h>
+
 #include <fcntl.h>
 
 #define QUEUE_PERMISSIONS 0660
@@ -25,6 +35,7 @@ struct net_params {
     char* dest_ip;
     int source_port;
     int dest_port;
+    char* iface;
 };
 
 uint64_t package_total_size = 0;
@@ -34,12 +45,42 @@ void* stat_monitor(void* params)
 {
     struct net_params* s_params = (struct net_params*) params;
 
-    int fd = socket(AF_INET, SOCK_RAW, IPPROTO_UDP);
-    if (fd < 0)
+    int fd;
+    struct ifreq ifr;
+    struct sockaddr_ll addr;
+    struct packet_mreq mreq;
+
+    if ((fd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_IP))) < 0)
     {
-        printf("Socket error");
-        return NULL;
+    	perror("socket");
     }
+    
+        memset(&addr,0,sizeof(addr));
+    memset(&ifr,0,sizeof(ifr));
+    memset(&mreq,0,sizeof(mreq));
+
+    strncpy(ifr.ifr_name,s_params->iface,IFNAMSIZ);
+    if(ioctl(fd,SIOCGIFINDEX,&ifr))
+    {
+    	perror("ioctl index");
+    }
+
+    addr.sll_ifindex = ifr.ifr_ifindex;
+    addr.sll_family = AF_PACKET;
+
+    if (bind(fd, (struct sockaddr *)&addr,sizeof(addr)) < 0)
+    {
+    	perror("bind");
+    }
+
+    mreq.mr_ifindex = ifr.ifr_ifindex;
+    mreq.mr_type = PACKET_MR_PROMISC;
+
+    if (setsockopt(fd, SOL_PACKET, PACKET_ADD_MEMBERSHIP, (void*)&mreq, (socklen_t)sizeof(mreq)) < 0)
+    {
+        perror("packet membership");
+    }
+    
     char* buffer = (char*) malloc(65536);
     memset(buffer, 0, 65536);
     struct sockaddr_in saddr;
@@ -59,20 +100,20 @@ void* stat_monitor(void* params)
             char dest[INET_ADDRSTRLEN];
             int p_source;
             int p_dest;
-            struct iphdr* ip = (struct iphdr*) buffer;
+            struct iphdr* ip = (struct iphdr*) (buffer + sizeof(struct ethhdr));
             saddr.sin_addr.s_addr = ip->saddr;
             daddr.sin_addr.s_addr = ip->daddr;
             inet_ntop(AF_INET, &(saddr.sin_addr), source, INET_ADDRSTRLEN);
             inet_ntop(AF_INET, &(daddr.sin_addr), dest, INET_ADDRSTRLEN);
-            struct udphdr* udp = (struct udphdr*) (buffer + sizeof(struct iphdr));
+            struct udphdr* udp = (struct udphdr*) (buffer + sizeof(struct iphdr)+ sizeof(struct ethhdr));
             p_source = (int)ntohs(udp->source);
             p_dest = (int)ntohs(udp->dest);
-            if ((s_params->source_ip == NULL || s_params->source_ip == source) &&
-                (s_params->dest_ip == NULL || s_params->dest_ip == dest) &&
+            if ((s_params->source_ip == NULL || strcmp(s_params->source_ip, source) == 0) &&
+                (s_params->dest_ip == NULL || strcmp(s_params->dest_ip, dest) == 0) &&
                 (s_params->source_port == -1 || s_params->source_port == p_source) &&
                 (s_params->dest_port == -1 || s_params->dest_port == p_dest))
             {
-                package_total_size += (int)ntohs(ip->tot_len);
+                package_total_size += buflen;
                 ++package_count;
             }
         }
@@ -120,8 +161,9 @@ int main(int argc, char*argv[])
     params.dest_port = -1;
     params.source_ip = NULL;
     params.dest_ip = NULL;
+    params.iface = NULL;
     int opt;
-    while ((opt=getopt(argc, argv, "s:d:S:D:")) != -1) {
+    while ((opt=getopt(argc, argv, "s:d:S:D:i:")) != -1) {
         switch (opt) {
         case 's':
         {
@@ -145,9 +187,20 @@ int main(int argc, char*argv[])
             strcpy(params.dest_ip, optarg);
             break;
         }
+        case 'i':
+        {
+            params.iface = malloc(sizeof(optarg));
+            strcpy(params.iface, optarg);
+            break;
+        }
         default:
             break;
         }
+    }
+    if (params.iface == NULL)
+    {
+        printf("-i iface is mandatory option\n");
+        exit(1);
     }
     pthread_t thread1, thread2;
     int iret1, iret2;

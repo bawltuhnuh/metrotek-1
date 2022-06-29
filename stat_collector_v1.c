@@ -1,18 +1,26 @@
 #include <sys/socket.h>
-#include <net/if.h>
 #include <sys/ioctl.h>
-#include <netinet/in.h>
+
+#include<net/if.h>
+#include<netinet/in.h>
+#include<netinet/ip.h>
+#include<netinet/if_ether.h>
+#include<netinet/udp.h>
+
+#include<linux/if_packet.h>
+
+#include <arpa/inet.h>
+
 #include <pthread.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
-#include <linux/ip.h>
-#include <linux/udp.h>
 #include <errno.h>
-#include <arpa/inet.h>
+
 #include <mqueue.h>
+
 #include <fcntl.h>
 
 #define QUEUE_PERMISSIONS 0660
@@ -40,30 +48,49 @@ void* stat_monitor(void* params)
 {
     struct net_params* s_params = (struct net_params*) params;
 
-    int fd = socket(AF_PACKET, SOCK_RAW, IPPROTO_UDP);
-    if (fd < 0)
+    int fd;
+    struct ifreq ifr;
+    struct sockaddr_ll addr;
+    struct packet_mreq mreq;
+
+    if ((fd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_IP))) < 0)
     {
-        printf("Socket error\n");
-        return NULL;
+    	perror("socket");
     }
+
     int flags = fcntl(fd, F_GETFL, 0);
     flags |= O_NONBLOCK;
     if (fcntl(fd, F_SETFL, flags) == -1)
     {
         perror("fcntl setfl");
     }
-    struct ifreq ifr;
-    memset(&ifr, 0, sizeof(ifr));
-    strncpy(ifr.ifr_name, s_params->iface, IFNAMSIZ);
-    //snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), s_params->iface);
-    if (setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, (void*)&ifr, sizeof(ifr)))
+
+    memset(&addr,0,sizeof(addr));
+    memset(&ifr,0,sizeof(ifr));
+    memset(&mreq,0,sizeof(mreq));
+
+    strncpy(ifr.ifr_name,s_params->iface,IFNAMSIZ);
+    if(ioctl(fd,SIOCGIFINDEX,&ifr))
     {
-        perror("setsockopt");
+    	perror("ioctl index");
     }
-    //if(ioctl(fd, SIOCGIFADDR,&ifr))
-    //{
-    //    perror("ioctl");
-    //}
+
+    addr.sll_ifindex = ifr.ifr_ifindex;
+    addr.sll_family = AF_PACKET;
+
+    if (bind(fd, (struct sockaddr *)&addr,sizeof(addr)) < 0)
+    {
+    	perror("bind");
+    }
+
+    mreq.mr_ifindex = ifr.ifr_ifindex;
+    mreq.mr_type = PACKET_MR_PROMISC;
+
+    if (setsockopt(fd, SOL_PACKET, PACKET_ADD_MEMBERSHIP, (void*)&mreq, (socklen_t)sizeof(mreq)) < 0)
+    {
+        perror("packet membership");
+    }
+
     char* buffer = (char*) malloc(65536);
     memset(buffer, 0, 65536);
     struct sockaddr_in saddr;
@@ -93,16 +120,16 @@ void* stat_monitor(void* params)
             char dest[INET_ADDRSTRLEN];
             int p_source;
             int p_dest;
-            struct iphdr* ip = (struct iphdr*) buffer;
+            struct iphdr* ip = (struct iphdr*) (buffer + sizeof(struct ethhdr));
             saddr.sin_addr.s_addr = ip->saddr;
             daddr.sin_addr.s_addr = ip->daddr;
             inet_ntop(AF_INET, &(saddr.sin_addr), source, INET_ADDRSTRLEN);
             inet_ntop(AF_INET, &(daddr.sin_addr), dest, INET_ADDRSTRLEN);
-            struct udphdr* udp = (struct udphdr*) (buffer + sizeof(struct iphdr));
+            struct udphdr* udp = (struct udphdr*) (buffer + sizeof(struct iphdr)+ sizeof(struct ethhdr));
             p_source = (int)ntohs(udp->source);
             p_dest = (int)ntohs(udp->dest);
-            if ((s_params->source_ip == NULL || s_params->source_ip == source) &&
-                (s_params->dest_ip == NULL || s_params->dest_ip == dest) &&
+            if ((s_params->source_ip == NULL || strcmp(s_params->source_ip, source) == 0) &&
+                (s_params->dest_ip == NULL || strcmp(s_params->dest_ip, dest) == 0) &&
                 (s_params->source_port == -1 || s_params->source_port == p_source) &&
                 (s_params->dest_port == -1 || s_params->dest_port == p_dest))
             {
@@ -110,7 +137,7 @@ void* stat_monitor(void* params)
                 {
                     perror("monitor mutex lock");
                 }
-                package_size = (int)ntohs(ip->tot_len);
+                package_size = buflen;
                 if (pthread_cond_signal(&cond) != 0)        
                 {
                     perror("monitor signal");
@@ -203,13 +230,15 @@ int main(int argc, char*argv[])
         }
         case 'S':
         {
-            params.source_ip = malloc(sizeof(optarg));
+            params.source_ip = malloc(INET_ADDRSTRLEN);
+            memset(params.source_ip, 0, INET_ADDRSTRLEN);
             strcpy(params.source_ip, optarg);
             break;
         }
         case 'D':
         {
-            params.dest_ip = malloc(sizeof(optarg));
+            params.dest_ip = malloc(INET_ADDRSTRLEN);
+            memset(params.dest_ip, 0, INET_ADDRSTRLEN);
             strcpy(params.dest_ip, optarg);
             break;
         }
