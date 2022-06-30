@@ -22,6 +22,7 @@
 #include <mqueue.h>
 
 #include <fcntl.h>
+#include <signal.h>
 
 #define QUEUE_PERMISSIONS 0660
 #define MAX_MESSAGES 10
@@ -41,6 +42,8 @@ struct net_params {
 uint64_t package_total_size = 0;
 uint64_t package_count = 0;
 
+int keep_running = 1;
+
 void* stat_monitor(void* params)
 {
     struct net_params* s_params = (struct net_params*) params;
@@ -54,8 +57,14 @@ void* stat_monitor(void* params)
     {
     	perror("socket");
     }
-    
-        memset(&addr,0,sizeof(addr));
+    /*
+    int flags = fcntl(fd, F_GETFL, 0);
+    flags |= O_NONBLOCK;
+    if (fcntl(fd, F_SETFL, flags) == -1) {
+        perror("fcntl setfl");
+    }
+    */
+    memset(&addr,0,sizeof(addr));
     memset(&ifr,0,sizeof(ifr));
     memset(&mreq,0,sizeof(mreq));
 
@@ -88,11 +97,16 @@ void* stat_monitor(void* params)
     struct sockaddr_in daddr;
     memset(&daddr, 0, sizeof(daddr));
     int buflen;
-    while (1)
+    while (keep_running)
     {
         buflen = recvfrom(fd, buffer, 65536, 0, NULL, NULL);
         if(buflen < 0)
-        {
+        {/*
+            if (errno == EAGAIN) {
+                continue;
+            } else {
+                perror("Recvfrom error");
+            }*/
             perror("Recvfrom error");
         } else
         {
@@ -118,6 +132,10 @@ void* stat_monitor(void* params)
             }
         }
     }
+    free(buffer);
+    free(s_params->source_ip);
+    free(s_params->dest_ip);
+    close(fd);
 }
 
 void* send_stats()
@@ -132,13 +150,13 @@ void* send_stats()
     char in_buf[MSG_BUFFER_SIZE];
     char out_buf[MSG_BUFFER_SIZE];
     
-    if ((qd_server = mq_open(SERVER_QUEUE_NAME, O_RDONLY | O_CREAT, QUEUE_PERMISSIONS, &attr)) == -1)
+    if ((qd_server = mq_open(SERVER_QUEUE_NAME, O_RDONLY | O_CREAT /*| O_NONBLOCK*/, QUEUE_PERMISSIONS, &attr)) == -1)
     {
         perror("Server: server mq_open");
     }
-    while (1)
+    while (keep_running)
     {
-	    if (mq_receive(qd_server, in_buf, MSG_BUFFER_SIZE, NULL) > 0)
+	if (mq_receive(qd_server, in_buf, MSG_BUFFER_SIZE, NULL) > 0)
         {
             if ((qd_client = mq_open(in_buf, O_WRONLY)) == -1)
             {
@@ -152,10 +170,23 @@ void* send_stats()
             }
         }
     }
+    if (mq_close(qd_server) == -1) {
+        perror("Server: mq_close");
+    }
+    if (mq_unlink(SERVER_QUEUE_NAME) == -1) {
+        perror("Server: mq_unlink");
+        exit(1);
+    }
+}
+
+void int_handler(int sig)
+{
+    keep_running = 0;
 }
 
 int main(int argc, char*argv[])
 {
+    signal(SIGINT, int_handler);
     struct net_params params;
     params.source_port = -1;
     params.dest_port = -1;
@@ -216,5 +247,6 @@ int main(int argc, char*argv[])
         printf("pthread error: %d", iret2);
         exit(1);
     }
+    pthread_join(thread1, NULL);
     pthread_join(thread2, NULL);
 }

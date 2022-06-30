@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <errno.h>
+#include <signal.h>
 
 #include <mqueue.h>
 
@@ -38,6 +39,8 @@ struct net_params {
     char* iface;
 };
 
+int keep_running = 1;
+
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 
 pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -53,15 +56,13 @@ void* stat_monitor(void* params)
     struct sockaddr_ll addr;
     struct packet_mreq mreq;
 
-    if ((fd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_IP))) < 0)
-    {
+    if ((fd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_IP))) < 0) {
     	perror("socket");
     }
 
     int flags = fcntl(fd, F_GETFL, 0);
     flags |= O_NONBLOCK;
-    if (fcntl(fd, F_SETFL, flags) == -1)
-    {
+    if (fcntl(fd, F_SETFL, flags) == -1) {
         perror("fcntl setfl");
     }
 
@@ -70,24 +71,21 @@ void* stat_monitor(void* params)
     memset(&mreq,0,sizeof(mreq));
 
     strncpy(ifr.ifr_name,s_params->iface,IFNAMSIZ);
-    if(ioctl(fd,SIOCGIFINDEX,&ifr))
-    {
+    if(ioctl(fd,SIOCGIFINDEX,&ifr)) {
     	perror("ioctl index");
     }
 
     addr.sll_ifindex = ifr.ifr_ifindex;
     addr.sll_family = AF_PACKET;
 
-    if (bind(fd, (struct sockaddr *)&addr,sizeof(addr)) < 0)
-    {
+    if (bind(fd, (struct sockaddr *)&addr,sizeof(addr)) < 0) {
     	perror("bind");
     }
 
     mreq.mr_ifindex = ifr.ifr_ifindex;
     mreq.mr_type = PACKET_MR_PROMISC;
 
-    if (setsockopt(fd, SOL_PACKET, PACKET_ADD_MEMBERSHIP, (void*)&mreq, (socklen_t)sizeof(mreq)) < 0)
-    {
+    if (setsockopt(fd, SOL_PACKET, PACKET_ADD_MEMBERSHIP, (void*)&mreq, (socklen_t)sizeof(mreq)) < 0) {
         perror("packet membership");
     }
 
@@ -98,24 +96,18 @@ void* stat_monitor(void* params)
     struct sockaddr_in daddr;
     memset(&daddr, 0, sizeof(daddr));
     int buflen;
-    while (1)
-    {
+    while (keep_running) {
         buflen = recvfrom(fd, buffer, 65536, 0, NULL, NULL);
-        if(buflen < 0)
-        {
-            if (errno == EAGAIN)
-            {
-                if (pthread_cond_signal(&cond) != 0)
-                {
+        if(buflen < 0) {
+            if (errno == EAGAIN) {
+                if (pthread_cond_signal(&cond) != 0) {
                     perror("cond signal");
                 }
                 continue;
-            } else
-            {
+            } else {
                 perror("Recvfrom error");
             }
-        } else
-        {
+        } else {
             char source[INET_ADDRSTRLEN];
             char dest[INET_ADDRSTRLEN];
             int p_source;
@@ -131,24 +123,27 @@ void* stat_monitor(void* params)
             if ((s_params->source_ip == NULL || strcmp(s_params->source_ip, source) == 0) &&
                 (s_params->dest_ip == NULL || strcmp(s_params->dest_ip, dest) == 0) &&
                 (s_params->source_port == -1 || s_params->source_port == p_source) &&
-                (s_params->dest_port == -1 || s_params->dest_port == p_dest))
-            {
-                if (pthread_mutex_lock(&lock) != 0)
-                {
+                (s_params->dest_port == -1 || s_params->dest_port == p_dest)) {
+                if (pthread_mutex_lock(&lock) != 0) {
                     perror("monitor mutex lock");
                 }
                 package_size = buflen;
-                if (pthread_cond_signal(&cond) != 0)        
-                {
+                if (pthread_cond_signal(&cond) != 0) {
                     perror("monitor signal");
                 }
-                if (pthread_mutex_unlock(&lock) != 0)
-                {
+                if (pthread_mutex_unlock(&lock) != 0) {
                     perror("monitor mutex unlock");
                 }
             }
         }
     }
+    if (pthread_cond_signal(&cond) != 0) {
+                    perror("cond signal");
+    }
+    free(buffer);
+    free(s_params->source_ip);
+    free(s_params->dest_ip);
+    close(fd);
 }
 
 void* compute_stats()
@@ -167,48 +162,52 @@ void* compute_stats()
     char in_buf[MSG_BUFFER_SIZE];
     char out_buf[MSG_BUFFER_SIZE];
     
-    if ((qd_server = mq_open(SERVER_QUEUE_NAME, O_RDONLY | O_CREAT | O_NONBLOCK, QUEUE_PERMISSIONS, &attr)) == -1)
-    {
+    if ((qd_server = mq_open(SERVER_QUEUE_NAME, O_RDONLY | O_CREAT | O_NONBLOCK, QUEUE_PERMISSIONS, &attr)) == -1) {
         perror("Server: server mq_open");
     }
-    while (1)
-    {
-        if (pthread_mutex_lock(&lock) != 0)
-        {
+    while (keep_running) {
+        if (pthread_mutex_lock(&lock) != 0) {
             perror("compute mutex lock");
         }
-        while(package_size == 0)
-        {        
-		    if (pthread_cond_wait(&cond, &lock) != 0)
-        	{
-            		perror("cond wait");
-        	}
-		    if (mq_receive(qd_server, in_buf, MSG_BUFFER_SIZE, NULL) > 0)
-        	{
-                if ((qd_client = mq_open(in_buf, O_WRONLY)) == -1)
-                {
+        while(package_size == 0 && keep_running) {        
+	    if (pthread_cond_wait(&cond, &lock) != 0) {
+                perror("cond wait");
+            }
+	    if (mq_receive(qd_server, in_buf, MSG_BUFFER_SIZE, NULL) > 0) {
+                if ((qd_client = mq_open(in_buf, O_WRONLY)) == -1) {
                     perror("Server: client mq_open");
                     continue;
                 }
                 sprintf(out_buf, "Count: %d, total size: %d", count, sum);
-                if (mq_send(qd_client, out_buf, strlen(out_buf) + 1, 0) == -1)
-                {
+                if (mq_send(qd_client, out_buf, strlen(out_buf) + 1, 0) == -1) {
                     perror("Server: mq_send");
                 }
             }
-	    }
+	}
         sum = sum + package_size;
         ++count;
         package_size = 0;
-        if (pthread_mutex_unlock(&lock) != 0)
-        {
+        if (pthread_mutex_unlock(&lock) != 0) {
             perror("compute mutex unlock");
         }
     }
+    if (mq_close(qd_server) == -1) {
+        perror("Server: mq_close");
+    }
+    if (mq_unlink(SERVER_QUEUE_NAME) == -1) {
+        perror("Server: mq_unlink");
+        exit(1);
+    }
+}
+
+void int_handler(int sig)
+{
+    keep_running = 0;
 }
 
 int main(int argc, char*argv[])
 {
+    signal(SIGINT, int_handler);
     struct net_params params;
     params.source_port = -1;
     params.dest_port = -1;
@@ -252,24 +251,22 @@ int main(int argc, char*argv[])
             break;
         }
     }
-    if (params.iface == NULL)
-    {
+    if (params.iface == NULL) {
         printf("-i iface is mandatory option\n");
         exit(1);
     }
     pthread_t thread1, thread2;
     int iret1, iret2;
     iret1 = pthread_create(&thread1, NULL, compute_stats, NULL);
-    if (iret1)
-    {
+    if (iret1) {
         printf("pthread error: %d\n", iret1);
         exit(1);
     }
     iret2 = pthread_create(&thread2, NULL, stat_monitor,(void*) &params);
-    if (iret2)
-    {
+    if (iret2) {
         printf("pthread error: %d\n", iret2);
         exit(1);
     }
+    pthread_join(thread1, NULL);
     pthread_join(thread2, NULL);
 }

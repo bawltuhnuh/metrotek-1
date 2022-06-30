@@ -27,3 +27,7 @@ un_collector_v2:
 			rm -rf $(PREFIX)/stat_collector_v2
 un_displayer:
 			rm -rf $(PREFIX)/stat_displayer
+
+deb:
+	dpkg-buildpackage -D
+
