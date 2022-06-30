@@ -57,13 +57,11 @@ void* stat_monitor(void* params)
     {
     	perror("socket");
     }
-    /*
     int flags = fcntl(fd, F_GETFL, 0);
     flags |= O_NONBLOCK;
     if (fcntl(fd, F_SETFL, flags) == -1) {
         perror("fcntl setfl");
     }
-    */
     memset(&addr,0,sizeof(addr));
     memset(&ifr,0,sizeof(ifr));
     memset(&mreq,0,sizeof(mreq));
@@ -101,12 +99,12 @@ void* stat_monitor(void* params)
     {
         buflen = recvfrom(fd, buffer, 65536, 0, NULL, NULL);
         if(buflen < 0)
-        {/*
+        {
             if (errno == EAGAIN) {
                 continue;
             } else {
                 perror("Recvfrom error");
-            }*/
+            }
             perror("Recvfrom error");
         } else
         {
@@ -150,7 +148,7 @@ void* send_stats()
     char in_buf[MSG_BUFFER_SIZE];
     char out_buf[MSG_BUFFER_SIZE];
     
-    if ((qd_server = mq_open(SERVER_QUEUE_NAME, O_RDONLY | O_CREAT /*| O_NONBLOCK*/, QUEUE_PERMISSIONS, &attr)) == -1)
+    if ((qd_server = mq_open(SERVER_QUEUE_NAME, O_RDONLY | O_CREAT | O_NONBLOCK, QUEUE_PERMISSIONS, &attr)) == -1)
     {
         perror("Server: server mq_open");
     }
